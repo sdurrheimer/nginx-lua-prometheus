@@ -89,6 +89,38 @@ function Counter:inc(value, label_values)
   self.prometheus:inc(self.name, self.label_names, label_values, value or 1)
 end
 
+-- Set a given counter by `value`
+--
+-- Args:
+--   value: (number) a value to set to the counter. Should be defined and greater than the current value.
+--   label_values: an array of label values. Can be nil (i.e. not defined) for
+--     metrics that have no labels.
+function Counter:set(value, label_values)
+  if value == nil then
+    self.prometheus:log_error("No value passed for " .. self.name)
+    return
+  end
+  local current_value, err = self.prometheus:get(self.name, self.label_names, label_values)
+  if current_value == nil then
+    current_value = 0
+  end
+  if current_value then
+    if current_value > value then
+      self.prometheus:log_error("Value passed for '", self.name, "' is lower than the current value")
+      return
+    end
+  else
+    self.prometheus:log_error("Error getting '", self.name, "': ", err)
+    return
+  end
+  err = self:check_labels(label_values)
+  if err ~= nil then
+    self.prometheus:log_error(err)
+    return
+  end
+  self.prometheus:set(self.name, self.label_names, label_values, value)
+end
+
 local Histogram = Metric:new()
 -- Record a given value in a histogram.
 --
@@ -311,11 +343,58 @@ end
 
 -- Set a given dictionary key.
 -- This overwrites existing values, so we use it only to initialize metrics.
-function Prometheus:set(key, value)
+function Prometheus:safe_set(key, value)
   local ok, err = self.dict:safe_set(key, value)
   if not ok then
     self:log_error_kv(key, value, err)
   end
+end
+
+-- Get a given counter `value`.
+--
+-- Args:
+--   name: (string) short metric name without any labels.
+--   label_names: (array) a list of label keys.
+--   label_values: (array) a list of label values.
+function Prometheus:get(name, label_names, label_values)
+  local key = full_metric_name(name, label_names, label_values)
+
+  local value, err = self.dict:get(key)
+  if not err == nil then
+    -- Unexpected error
+    self:log_error("Error while getting '", key, "': '", err, "'")
+  end
+  return value
+end
+
+-- Set a given counter by `value`.
+--
+-- Args:
+--   name: (string) short metric name without any labels.
+--   label_names: (array) a list of label keys.
+--   label_values: (array) a list of label values.
+--   value: (number) value to add. Optional, defaults to 1.
+function Prometheus:set(name, label_names, label_values, value)
+  local key = full_metric_name(name, label_names, label_values)
+  if value < 0 then
+    self:log_error_kv(key, value, "Value should not be negative")
+    return
+  end
+
+  local success, err = self.dict:set(key, value)
+  if success then
+    return
+  end
+  -- Yes, this looks like a race, so I guess we might under-report some values
+  -- when multiple workers simultaneously try to create the same metric.
+  -- Hopefully this does not happen too often (shared dictionary does not get
+  -- reset during configuation reload).
+  if err == "not found" then
+    self:safe_set(key, value)
+    return
+  end
+  -- Unexpected error
+  self:log_error_kv(key, value, err)
 end
 
 -- Increment a given counter by `value`.
@@ -342,7 +421,7 @@ function Prometheus:inc(name, label_names, label_values, value)
   -- Hopefully this does not happen too often (shared dictionary does not get
   -- reset during configuation reload).
   if err == "not found" then
-    self:set(key, value)
+    self:safe_set(key, value)
     return
   end
   -- Unexpected error
