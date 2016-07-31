@@ -1,4 +1,5 @@
 -- vim: ts=2:sw=2:sts=2:expandtab
+EXPORT_ASSERT_TO_GLOBALS = true
 luaunit = require('luaunit')
 prometheus = require('prometheus')
 
@@ -61,6 +62,8 @@ function TestPrometheus:setUp()
   self.p = prometheus.init("metrics")
   self.counter1 = self.p:counter("metric1", "Metric 1")
   self.counter2 = self.p:counter("metric2", "Metric 2", {"f2", "f1"})
+  self.gauge1 = self.p:gauge("metric3", "Metric 3")
+  self.gauge2 = self.p:gauge("metric4", "Metric 4", {"f2", "f1"})
   self.hist1 = self.p:histogram("l1", "Histogram 1")
   self.hist2 = self.p:histogram("l2", "Histogram 2", {"var", "site"})
 end
@@ -72,8 +75,9 @@ function TestPrometheus:testErrorUnitialized()
   local p = prometheus
   p:counter("metric1")
   p:histogram("metric2")
+  p:gauge("metric3")
 
-  assertEquals(table.getn(ngx.logs), 2)
+  assertEquals(table.getn(ngx.logs), 3)
 end
 function TestPrometheus:testErrorNoMemory()
   local counter3 = self.p:counter("willnotfit")
@@ -98,43 +102,67 @@ function TestPrometheus:testErrorDuplicateMetrics()
   self.p:counter("l2_bucket", "Conflicts with Histogram 2")
   self.p:histogram("l1", "Conflicts with Histogram 1")
   self.p:histogram("metric2", "Conflicts with Metric 2")
+  self.p:gauge("metric1", "Conflicts with Metric 1")
 
-  assertEquals(self.dict:get("nginx_metric_errors_total"), 6)
-  assertEquals(table.getn(ngx.logs), 6)
+  assertEquals(self.dict:get("nginx_metric_errors_total"), 7)
+  assertEquals(table.getn(ngx.logs), 7)
 end
 function TestPrometheus:testErrorNegativeValue()
   self.counter1:inc(-5)
+  self.counter1:set(-5)
+  self.gauge1:inc(-5)
+  self.gauge1:dec(-5)
+  self.gauge1:set(-5)
 
   assertEquals(self.dict:get("metric1"), nil)
-  assertEquals(self.dict:get("nginx_metric_errors_total"), 1)
-  assertEquals(table.getn(ngx.logs), 1)
+  assertEquals(self.dict:get("metric3"), nil)
+  assertEquals(self.dict:get("nginx_metric_errors_total"), 5)
+  assertEquals(table.getn(ngx.logs), 5)
 end
 function TestPrometheus:testErrorIncorrectLabels()
   self.counter1:inc(1, {"should-be-no-labels"})
   self.counter2:inc(1, {"too-few-labels"})
   self.counter2:inc(1)
+  self.gauge1:inc(1, {"should-be-no-labels"})
+  self.gauge2:inc(1, {"too-few-labels"})
+  self.gauge2:inc(1)
   self.hist2:observe(1, {"too", "many", "labels"})
 
   assertEquals(self.dict:get("metric1"), nil)
+  assertEquals(self.dict:get("metric2"), nil)
+  assertEquals(self.dict:get("metric3"), nil)
+  assertEquals(self.dict:get("metric4"), nil)
   assertEquals(self.dict:get("l1_count"), nil)
-  assertEquals(self.dict:get("nginx_metric_errors_total"), 4)
-  assertEquals(table.getn(ngx.logs), 4)
+  assertEquals(self.dict:get("nginx_metric_errors_total"), 7)
+  assertEquals(table.getn(ngx.logs), 7)
 end
 function TestPrometheus:testNumericLabelValues()
   self.counter2:inc(1, {0, 15.5})
+  self.gauge1:inc(1)
+  self.gauge2:set(5, {0, 15.5})
+  self.gauge2:dec(1, {0, 15.5})
   self.hist2:observe(1, {-3, 90000})
 
   assertEquals(self.dict:get('metric2{f2="0",f1="15.5"}'), 1)
+  assertEquals(self.dict:get('metric3'), 1)
+  assertEquals(self.dict:get('metric4{f2="0",f1="15.5"}'), 4)
   assertEquals(self.dict:get('l2_sum{var="-3",site="90000"}'), 1)
   assertEquals(ngx.logs, nil)
 end
 function TestPrometheus:testNoValues()
   self.counter1:inc()  -- defaults to 1
+  self.counter2:set()  -- should produce an error
+  self.gauge1:inc()  -- defaults to 1
+  self.gauge2:inc(1, {0, 15.5})  -- defaults to 1
+  self.gauge2:dec(1, {0, 15.5})  -- defaults to 1
+  self.gauge2:set()  -- should produce an error
   self.hist1:observe()  -- should produce an error
 
   assertEquals(self.dict:get("metric1"), 1)
-  assertEquals(self.dict:get("nginx_metric_errors_total"), 1)
-  assertEquals(table.getn(ngx.logs), 1)
+  assertEquals(self.dict:get("metric3"), 1)
+  assertEquals(self.dict:get('metric4{f2="0",f1="15.5"}'), 0)
+  assertEquals(self.dict:get("nginx_metric_errors_total"), 3)
+  assertEquals(table.getn(ngx.logs), 3)
 end
 function TestPrometheus:testCounters()
   self.counter1:inc()
@@ -144,6 +172,36 @@ function TestPrometheus:testCounters()
 
   assertEquals(self.dict:get("metric1"), 5)
   assertEquals(self.dict:get('metric2{f2="v2",f1="v1"}'), 4)
+  assertEquals(ngx.logs, nil)
+end
+function TestPrometheus:testCountersSet()
+  self.counter1:inc()
+  self.counter1:set(4)
+  self.counter2:inc(1, {"v2", "v1"})
+  self.counter2:set(3, {"v2", "v1"})
+
+  assertEquals(self.dict:get("metric1"), 4)
+  assertEquals(self.dict:get('metric2{f2="v2",f1="v1"}'), 3)
+  assertEquals(ngx.logs, nil)
+end
+function TestPrometheus:testGauges()
+  self.gauge1:inc(4)
+  self.gauge1:dec()
+  self.gauge2:inc(5, {"v2", "v1"})
+  self.gauge2:dec(3, {"v2", "v1"})
+
+  assertEquals(self.dict:get("metric3"), 3)
+  assertEquals(self.dict:get('metric4{f2="v2",f1="v1"}'), 2)
+  assertEquals(ngx.logs, nil)
+end
+function TestPrometheus:testGaugesSet()
+  self.gauge1:inc()
+  self.gauge1:set(4)
+  self.gauge2:inc(1, {"v2", "v1"})
+  self.gauge2:set(3, {"v2", "v1"})
+
+  assertEquals(self.dict:get("metric3"), 4)
+  assertEquals(self.dict:get('metric4{f2="v2",f1="v1"}'), 3)
   assertEquals(ngx.logs, nil)
 end
 function TestPrometheus:testLatencyHistogram()
@@ -221,6 +279,8 @@ function TestPrometheus:testCollect()
   self.counter1:inc(5)
   self.counter2:inc(2, {"v2", "v1"})
   self.counter2:inc(2, {"v2", "v1"})
+  self.gauge1:inc(4)
+  self.gauge2:set(7, {"v2","v1"})
   self.hist1:observe(0.000001)
   self.hist2:observe(0.000001, {"ok", "site2"})
   self.hist2:observe(3, {"ok", "site2"})
@@ -239,6 +299,13 @@ function TestPrometheus:testCollect()
   assert(find_idx(ngx.said, "# TYPE metric2 counter") ~= nil)
   assert(find_idx(ngx.said, 'metric2{f2="v2",f1="v1"} 4') ~= nil)
 
+  assert(find_idx(ngx.said, "# HELP metric3 Metric 3") ~= nil)
+  assert(find_idx(ngx.said, "# TYPE metric3 gauge") ~= nil)
+  assert(find_idx(ngx.said, "metric3 4") ~= nil)
+
+  assert(find_idx(ngx.said, "# TYPE metric4 gauge") ~= nil)
+  assert(find_idx(ngx.said, 'metric4{f2="v2",f1="v1"} 7') ~= nil)
+
   assert(find_idx(ngx.said, "# TYPE b1 histogram") ~= nil)
   assert(find_idx(ngx.said, "# HELP b1 Bytes") ~= nil)
   assert(find_idx(ngx.said, 'b1_bucket{var="ok",le="0100.0"} 2') ~= nil)
@@ -249,17 +316,19 @@ function TestPrometheus:testCollect()
 
   -- check that type comment exists and is before any samples for the metric.
   local type_idx = find_idx(ngx.said, '# TYPE l1 histogram')
-  assert (type_idx ~= nil)
-  assert (ngx.said[type_idx-1]:find("^l1") == nil)
-  assert (ngx.said[type_idx+1]:find("^l1") ~= nil)
+  assert(type_idx ~= nil)
+  assert(ngx.said[type_idx-1]:find("^l1") == nil)
+  assert(ngx.said[type_idx+1]:find("^l1") ~= nil)
   assertEquals(ngx.logs, nil)
 end
 
 function TestPrometheus:testCollectWithPrefix()
   local p = prometheus.init("metrics", "test_pref_")
   local counter1 = p:counter("metric1", "Metric 1")
+  local gauge1 = p:gauge("metric2", "Metric 2")
   local hist1 = p:histogram("b1", "Bytes", {"var"}, {100, 2000})
   counter1:inc(5)
+  gauge1:set(3)
   hist1:observe(50, {"ok"})
   hist1:observe(50, {"ok"})
   hist1:observe(150, {"ok"})
@@ -269,6 +338,10 @@ function TestPrometheus:testCollectWithPrefix()
   assert(find_idx(ngx.said, "# HELP test_pref_metric1 Metric 1") ~= nil)
   assert(find_idx(ngx.said, "# TYPE test_pref_metric1 counter") ~= nil)
   assert(find_idx(ngx.said, "test_pref_metric1 5") ~= nil)
+
+  assert(find_idx(ngx.said, "# HELP test_pref_metric2 Metric 2") ~= nil)
+  assert(find_idx(ngx.said, "# TYPE test_pref_metric2 gauge") ~= nil)
+  assert(find_idx(ngx.said, "test_pref_metric2 3") ~= nil)
 
   assert(find_idx(ngx.said, "# TYPE test_pref_b1 histogram") ~= nil)
   assert(find_idx(ngx.said, "# HELP test_pref_b1 Bytes") ~= nil)
