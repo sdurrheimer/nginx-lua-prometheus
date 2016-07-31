@@ -22,11 +22,17 @@ init_by_lua '
     "nginx_http_requests_total", "Number of HTTP requests", {"host", "status"})
   metric_latency = prometheus:histogram(
     "nginx_http_request_duration_seconds", "HTTP request latency", {"host"})
+  metric_connections_current = prometheus:gauge(
+    "nginx_http_connections_current", "Number of HTTP connections currently processed", {"state"})
 ';
 log_by_lua '
   local host = ngx.var.host:gsub("^www.", "")
   metric_requests:inc(1, {host, ngx.var.status})
   metric_latency:observe(ngx.now() - ngx.req.start_time(), {host})
+  metric_connections_current:set(tonumber(ngx.var.connections_active), {"active"})
+  metric_connections_current:set(tonumber(ngx.var.connections_reading), {"reading"})
+  metric_connections_current:set(tonumber(ngx.var.connections_waiting), {"waiting"})
+  metric_connections_current:set(tonumber(ngx.var.connections_writing), {"writing"})
 ';
 ```
 
@@ -40,6 +46,7 @@ This:
 * on each HTTP request measures its latency, recording it in the histogram and
   increments the counter, setting current HTTP host as `host` label and
   HTTP status code as `status` label.
+* registers a gauge called `nginx_http_connections_current` with one label `state`;
 
 Last step is to configure a separate server that will expose the metrics.
 Please make sure to only make it reachable from your Prometheus server:
