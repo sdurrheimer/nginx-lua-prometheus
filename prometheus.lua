@@ -206,7 +206,7 @@ end
 -- Args:
 --   dict_name: (string) name of the nginx shared dictionary which will be
 --     used to store all metrics
---   prefix: (optional string) if supplied, prefix is added to all 
+--   prefix: (optional string) if supplied, prefix is added to all
 --   metric names on output
 --
 -- Returns:
@@ -279,7 +279,7 @@ end
 --   buckets: array if numbers, defining bucket boundaries. Optional.
 --
 -- Returns:
---   a Counter object.
+--   a Histogram object.
 function Prometheus:histogram(name, description, label_names, buckets)
   if not self.initialized then
     ngx.log(ngx.ERR, "Prometheus module has not been initialized")
